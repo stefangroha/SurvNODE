@@ -57,7 +57,7 @@ class ODEFunc(nn.Module):
                 nn.init.normal_(m.weight, mean=0, std=0.1)
                 nn.init.constant_(m.bias, val=0.)
             if count==length-1:
-                nn.init.normal_(m.weight, mean=0, std=0)
+                nn.init.constant_(m.weight, 0)
             count += 1
         self.num_in = num_in
     

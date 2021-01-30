@@ -4,6 +4,20 @@ from torchdiffeq import odeint
 # from torchdiffeq import odeint_adjoint as odeint
 import numpy as np
 import pandas as pd
+from pycox.models.loss import rank_loss_deephit_single
+
+
+def rms_norm(tensor):
+    return tensor.pow(2).mean().sqrt()
+
+def make_norm(state):
+    state_size = state.numel()
+    def norm(aug_state):
+        y = aug_state[1:1 + state_size]
+        adj_y = aug_state[1 + state_size:1 + 2 * state_size]
+        return max(rms_norm(y), rms_norm(adj_y))
+    return norm
+
      
         
 class Encoder(nn.Module):
@@ -47,8 +61,9 @@ class ODEFunc(nn.Module):
         self.number_of_hazards = int(np.nansum(transition_matrix.flatten().cpu()))
         self.num_probs = np.prod(transition_matrix.shape)
         # use this NN if covariates are to be included
-#         self.net = nn.Sequential(*((nn.Linear(2*self.num_probs+self.number_of_hazards+num_latent+num_in+1,layers[0]), nn.Tanh()) + tuple(tup for element in tuple(((nn.Linear(layers[i],layers[i+1]), nn.Tanh()) for i in range(len(layers)-1))) for tup in element) + (nn.Linear(layers[-1],self.number_of_hazards+num_latent),)))
-        self.net = nn.Sequential(*((nn.Linear(2*self.num_probs+self.number_of_hazards+2*num_latent+1,layers[0]), nn.Tanh()) + tuple(tup for element in tuple(((nn.Linear(layers[i],layers[i+1]), nn.Tanh()) for i in range(len(layers)-1))) for tup in element) + (nn.Linear(layers[-1],self.number_of_hazards+num_latent),)))
+        self.net = nn.Sequential(*((nn.Linear(2*self.num_probs+self.number_of_hazards+2*num_latent+num_in+1,layers[0]), nn.Tanh()) + tuple(tup for element in tuple(((nn.Linear(layers[i],layers[i+1]), nn.Tanh()) for i in range(len(layers)-1))) for tup in element) + (nn.Linear(layers[-1],self.number_of_hazards+num_latent),)))
+        # use this NN if memory is included
+        # self.net = nn.Sequential(*((nn.Linear(2*self.num_probs+self.number_of_hazards+2*num_latent+1,layers[0]), nn.Tanh()) + tuple(tup for element in tuple(((nn.Linear(layers[i],layers[i+1]), nn.Tanh()) for i in range(len(layers)-1))) for tup in element) + (nn.Linear(layers[-1],self.number_of_hazards+num_latent),)))
 
         count = 0
         length = len(list(self.net.modules()))
@@ -61,8 +76,8 @@ class ODEFunc(nn.Module):
             count += 1
         self.num_in = num_in
     
-#     def set_x(self, x):
-#         self.x = x
+    def set_x(self, x):
+        self.x = x
 
     def set_y0(self, y0):
         self.y0 = y0
@@ -70,7 +85,8 @@ class ODEFunc(nn.Module):
     # KFE_KBE function
     def forward(self, t, y):
         # pass values through NN
-        out = self.net(torch.cat((y,self.y0,torch.tensor([t],device=y.device).repeat((y.shape[0],1))),1))
+        # out = self.net(torch.cat((y,self.y0,torch.tensor([t],device=y.device).repeat((y.shape[0],1))),1))
+        out = self.net(torch.cat((y,self.y0,self.x,torch.tensor([t],device=y.device).repeat((y.shape[0],1))),1))
         
         # build Q matrix from output
         qvec = torch.nn.functional.softplus(out[:,:self.number_of_hazards],beta=self.softplus_beta)
@@ -99,12 +115,13 @@ class ODEBlock(nn.Module):
         self.transition_matrix = odefunc.transition_matrix
 
     def forward(self, y0, x, tinterval):
-#         self.odefunc.set_x(x)
+        self.odefunc.set_x(x) # saves covariates
         self.odefunc.set_y0(y0)
         p0 = torch.eye(self.trans_dim,device=y0.device).reshape(self.num_probs).repeat((y0.shape[0],1))
         Q0 = torch.zeros(self.number_of_hazards,device=x.device).repeat((y0.shape[0],1))
         yin = torch.cat((p0,p0,Q0,y0),1)
-        out = odeint(self.odefunc, yin, tinterval, method="dopri5", atol=1e-8, rtol=1e-8)
+        out = odeint(self.odefunc, yin, tinterval, method="rk4", atol=1e-6, rtol=1e-6)#,
+                        #    adjoint_options=dict(norm=make_norm(y0)))
         return out       
         
 class SurvNODE(nn.Module):
@@ -144,14 +161,20 @@ class SurvNODE(nn.Module):
 #         S = torch.bmm(Ttstartinv,Ttstop)
 #         S = torch.cat([S[i:i+1,from_state[i]-1,from_state[i]-1] for i in range(len(from_state))])
         
+        
         # get lambda at tstop
-        net_in = torch.cat((torch.cat([out[tstop_indices[i],i:i+1,:] for i in range(len(tstop))]),self.encoder(x),tstop.reshape(-1,1)),1)
+        net_in = torch.cat((torch.cat([out[tstop_indices[i],i:i+1,:] for i in range(len(tstop))]),self.encoder(x),x,tstop.reshape(-1,1)),1)
+        # net_in = torch.cat((torch.cat([out[tstop_indices[i],i:i+1,:] for i in range(len(tstop))]),self.encoder(x),tstop.reshape(-1,1)),1)
         qvec = torch.nn.functional.softplus(self.odeblock.odefunc.net(net_in)[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta)
         q = torch.zeros(self.trans_dim, self.trans_dim,device=x.device).repeat((x.shape[0],1,1))
         q[self.transition_matrix.repeat((x.shape[0],1,1))==1] = qvec.flatten()
         lam = torch.cat([q[t:t+1,from_state[t]-1,to_state[t]-1] for t in range(len(from_state))])
         # get all augmented hazards at the final time (t=multiplier) for loss term
-        net_in = torch.cat((out[-1,:,:],self.encoder(x),torch.tensor([max(tstop)],device=x.device).repeat(tstop.reshape(-1,1).shape)),1)
+        # run this with covariatios
+        net_in = torch.cat((out[-1,:,:],self.encoder(x),x, torch.tensor([max(tstop)],device=x.device).repeat(tstop.reshape(-1,1).shape)),1)
+        
+        # net_in = torch.cat((out[-1,:,:],self.encoder(x),torch.tensor([max(tstop)],device=x.device).repeat(tstop.reshape(-1,1).shape)),1)
+        
         out = self.odeblock.odefunc.net(net_in)
         all_hazards_T = torch.cat((torch.nn.functional.softplus(out[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta),out[:,self.number_of_hazards:]),-1)
         
@@ -177,7 +200,7 @@ class SurvNODE(nn.Module):
             out = self.odeblock(self.encoder(x),x,tvec)
             Qvec = torch.zeros((tvec.shape[0],x.shape[0],self.trans_dim,self.trans_dim),device=x.device)
             for i in range(tvec.shape[0]):
-                net_in = torch.cat((out[i,:,:],tvec[i].repeat(x.shape)),1)
+                net_in = torch.cat((out[i,:,:], self.encoder(x), x ,tvec[i].repeat(x.shape[0]).reshape(-1, 1)),1)
                 temp = self.odeblock.odefunc.net(net_in)
                 qvec = torch.nn.functional.softplus(temp[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta)
                 Q = torch.zeros(self.trans_dim, self.trans_dim,device=x.device).repeat((x.shape[0],1,1))
@@ -185,6 +208,25 @@ class SurvNODE(nn.Module):
                 Q[torch.eye(self.trans_dim, self.trans_dim,device=x.device).repeat((x.shape[0],1,1)) == 1] = -torch.sum(Q,2).flatten()
                 Qvec[i,:,:,:] = Q
         return Qvec
+
+    # def predict_hazard(self,x,tvec):
+    #     """
+    #         Predict cause specific hazard function based on covariates x at times in tvec.
+    #         This function returns the matrix Q of instantaneous hazards over time.
+    #     """
+    #     with torch.no_grad():
+    #         tvec = tvec.float().to(x.device)
+    #         out = self.odeblock(self.encoder(x),x,tvec)
+    #         Qvec = torch.zeros((tvec.shape[0],x.shape[0],self.trans_dim,self.trans_dim),device=x.device)
+    #         for i in range(tvec.shape[0]):
+    #             net_in = torch.cat((out[i,:,:-1],self.encoder(x),tvec[i].repeat(x.shape[0]).reshape(-1,1)),1)
+    #             temp = self.odeblock.odefunc.net(net_in)
+    #             qvec = torch.nn.functional.softplus(temp[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta)
+    #             Q = torch.zeros(self.trans_dim, self.trans_dim,device=x.device).repeat((x.shape[0],1,1))
+    #             Q[self.transition_matrix.repeat((x.shape[0],1,1))==1] = qvec.flatten()
+    #             Q[torch.eye(self.trans_dim, self.trans_dim,device=x.device).repeat((x.shape[0],1,1)) == 1] = -torch.sum(Q,2).flatten()
+    #             Qvec[i,:,:,:] = Q
+    #     return Qvec
     
     def predict_cumhazard(self,x,tvec):
         """
@@ -219,5 +261,6 @@ def loss(odesurv,x,Tstart,Tstop,From,To,trans,status,mu=1e-4):
     S,lam,all_h_T = odesurv(x,Tstart,Tstop,From,To)
     loglik = -(status*torch.log(lam)+torch.log(S)).mean()
     reg = torch.norm(all_h_T,2,dim=1).mean()
+    # ranking_loss = rank_loss_deephit_single()
 
     return (loglik + mu*reg), loglik, reg

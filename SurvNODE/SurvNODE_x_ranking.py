@@ -18,7 +18,89 @@ def make_norm(state):
         return max(rms_norm(y), rms_norm(adj_y))
     return norm
 
-     
+def _pair_rank_mat(mat, idx_durations, events, dtype='float32'):
+    n = len(idx_durations)
+    for i in range(n):
+        dur_i = idx_durations[i]
+        ev_i = events[i]
+        if ev_i == 0:
+            continue
+        for j in range(n):
+            dur_j = idx_durations[j]
+            ev_j = events[j]
+            if (dur_i < dur_j) or ((dur_i == dur_j) and (ev_j == 0)):
+                mat[i, j] = 1
+    return mat
+
+def pair_rank_mat(idx_durations, events, dtype='float32'):
+    """Indicator matrix R with R_ij = 1{T_i < T_j and D_i = 1}.
+    So it takes value 1 if we observe that i has an event before j and zero otherwise.
+    
+    Arguments:
+        idx_durations {np.array} -- Array with durations.
+        events {np.array} -- Array with event indicators.
+    
+    Keyword Arguments:
+        dtype {str} -- dtype of array (default: {'float32'})
+    
+    Returns:
+        np.array -- n x n matrix indicating if i has an observerd event before j.
+    """
+    idx_durations = idx_durations.reshape(-1)
+    events = events.reshape(-1)
+    n = len(idx_durations)
+    mat = np.zeros((n, n), dtype=dtype)
+    mat = _pair_rank_mat(mat, idx_durations, events, dtype)
+    return mat
+
+# def _diff_cdf_at_time_i(pmf, y):
+#     """R is the matrix from the DeepHit code giving the difference in CDF between individual
+#     i and j, at the event time of j. 
+#     I.e: R_ij = F_i(T_i) - F_j(T_i)
+    
+#     Arguments:
+#         pmf {torch.tensor} -- Matrix with probability mass function pmf_ij = f_i(t_j)
+#         y {torch.tensor} -- Matrix with indicator of duration/censor time.
+    
+#     Returns:
+#         torch.tensor -- R_ij = F_i(T_i) - F_j(T_i)
+#     """
+#     n = pmf.shape[0]
+#     ones = torch.ones((n, 1), device=pmf.device)  
+#     r = pmf.cumsum(1).matmul(y.transpose(0, 1))
+#     diag_r = r.diag().view(1, -1)
+#     r = ones.matmul(diag_r) - r
+#     return r.transpose(0, 1)
+
+def _reduction(loss, reduction = 'mean'):
+    if reduction == 'none':
+        return loss
+    elif reduction == 'mean':
+        return loss.mean()
+    elif reduction == 'sum':
+        return loss.sum()
+    raise ValueError(f"`reduction` = {reduction} is not valid. Use 'none', 'mean' or 'sum'.")
+
+def _rank_loss_deephit(cumhaz, rank_mat, sigma, reduction= 'mean'):
+    """Ranking loss from DeepHit.
+    
+    Arguments:
+        pmf {torch.tensor} -- Matrix with probability mass function pmf_ij = f_i(t_j)
+        y {torch.tensor} -- Matrix with indicator of duration and censoring time. 
+        rank_mat {torch.tensor} -- See pair_rank_mat function.
+        sigma {float} -- Sigma from DeepHit paper, chosen by you.
+    
+    Returns:
+        torch.tensor -- loss
+    """
+    r = cumhaz.transpose(0,1)
+    loss = rank_mat * torch.exp(-r/sigma)
+    loss = loss.mean(1, keepdim=True)
+    return _reduction(loss, reduction)
+
+def rank_loss_deephit(Tstop,status,cumhaz,sigma):
+    rank_mat = torch.from_numpy(pair_rank_mat(Tstop.cpu().numpy(),status.cpu().numpy())).to(Tstop.device)
+    return _rank_loss_deephit(cumhaz,rank_mat,sigma)
         
 class Encoder(nn.Module):
     """
@@ -120,7 +202,7 @@ class ODEBlock(nn.Module):
         p0 = torch.eye(self.trans_dim,device=y0.device).reshape(self.num_probs).repeat((y0.shape[0],1))
         Q0 = torch.zeros(self.number_of_hazards,device=x.device).repeat((y0.shape[0],1))
         yin = torch.cat((p0,p0,Q0,y0),1)
-        out = odeint(self.odefunc, yin, tinterval, method="dopri5", atol=1e-8, rtol=1e-8)#,adjoint_options=dict(norm=make_norm(y0)))
+        out = odeint(self.odefunc, yin, tinterval, method="dopri5", atol=1e-6, rtol=1e-6)#,adjoint_options=dict(norm=make_norm(y0)))
         return out       
         
 class SurvNODE(nn.Module):
@@ -148,7 +230,6 @@ class SurvNODE(nn.Module):
         S = torch.bmm(Ttstartinv,Ttstop)
         S = torch.cat([S[i:i+1,from_state[i]-1,from_state[i]-1] for i in range(len(from_state))])
         
-        
 #         # get P_ij(s,0) by inverting P_ij(0,s)
 #         tstart_indices = torch.flatten(torch.cat([(torch.unique(torch.cat([torch.tensor([0.],device=x.device),tstart,tstop])) == time).nonzero() for time in tstart]))
 #         Ttstart = out[tstart_indices,[i for i in range(tstart.shape[0])],:self.num_probs].reshape((tstart.shape[0],self.trans_dim,self.trans_dim))
@@ -168,16 +249,16 @@ class SurvNODE(nn.Module):
         q = torch.zeros(self.trans_dim, self.trans_dim,device=x.device).repeat((x.shape[0],1,1))
         q[self.transition_matrix.repeat((x.shape[0],1,1))==1] = qvec.flatten()
         lam = torch.cat([q[t:t+1,from_state[t]-1,to_state[t]-1] for t in range(len(from_state))])
+        # get matrix for ranking loss
+        cumhaz = 1 - out[tstop_indices,:,0]
+        
         # get all augmented hazards at the final time (t=multiplier) for loss term
-        # run this with covariatios
         net_in = torch.cat((out[-1,:,:],self.encoder(x),x, torch.tensor([max(tstop)],device=x.device).repeat(tstop.reshape(-1,1).shape)),1)
-        
-        # net_in = torch.cat((out[-1,:,:],self.encoder(x),torch.tensor([max(tstop)],device=x.device).repeat(tstop.reshape(-1,1).shape)),1)
-        
         out = self.odeblock.odefunc.net(net_in)
-        all_hazards_T = torch.cat((torch.nn.functional.softplus(out[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta),out[:,self.number_of_hazards:]),-1)
-        
-        return (S,lam,all_hazards_T)
+#         all_hazards_T = torch.cat((torch.nn.functional.softplus(out[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta),out[:,self.number_of_hazards:]),-1)
+        all_hazards_T = out[:,self.number_of_hazards:]
+    
+        return (S,lam,all_hazards_T,cumhaz)
     
     def predict(self,x,tvec):
         """
@@ -243,7 +324,7 @@ class SurvNODE(nn.Module):
         return Qvec
 
             
-def loss(odesurv,x,Tstart,Tstop,From,To,trans,status,mu=1e-4):
+def loss(odesurv,x,Tstart,Tstop,From,To,trans,status,mu=1e-4,alpha=0.7,sigma=0.5): #alpha = 0.3
     """
         Loss function
         Parameter mu regulates the influence of the Lyapunov loss
@@ -257,9 +338,9 @@ def loss(odesurv,x,Tstart,Tstop,From,To,trans,status,mu=1e-4):
     To = To[trans_exist]
     status = status[trans_exist]
     
-    S,lam,all_h_T = odesurv(x,Tstart,Tstop,From,To)
+    S,lam,all_h_T,cumhaz = odesurv(x,Tstart,Tstop,From,To)
     loglik = -(status*torch.log(lam)+torch.log(S)).mean()
     reg = torch.norm(all_h_T,2,dim=1).mean()
-    # ranking_loss = rank_loss_deephit_single()
+    ranking_loss = rank_loss_deephit(Tstop,status,cumhaz,sigma)
 
-    return (loglik + mu*reg), loglik, reg
+    return ((1-alpha)*loglik + alpha*ranking_loss + mu*reg), loglik, reg

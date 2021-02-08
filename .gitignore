@@ -1,3 +1,6 @@
 sandbox
 *.png
 *.gif
+*.pt
+Data
+*.pyc

@@ -1,21 +1,20 @@
 import torch
 import torch.nn as nn
-# from torchdiffeq import odeint
+from torchdiffeq import odeint
 # from torchdiffeq import odeint_adjoint as odeint
 from torch.utils.data import DataLoader, TensorDataset
-from ray import tune
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
 from lifelines import CoxPHFitter
 from lifelines import KaplanMeierFitter
 
 from pycox.evaluation import EvalSurv
 
-random_seed = 1337# 137
+random_seed = 137 #1337# 137
 torch.manual_seed(random_seed)
 np.random.seed(random_seed)
 
@@ -26,7 +25,7 @@ print(device)
 
 # Early stopping class from https://github.com/Bjarten/early-stopping-pytorch
 from EarlyStopping import EarlyStopping
-from SurvNODE_alt import *
+from SurvNODE import *
 
 def measures(odesurv,initial,x,Tstart,Tstop,From,To,trans,status, multiplier=1.,points=500):
     with torch.no_grad():
@@ -45,13 +44,126 @@ def measures(odesurv,initial,x,Tstart,Tstop,From,To,trans,status, multiplier=1.,
     return conc,ibs,inbll
 
 from pycox import datasets
+# df = datasets.metabric.read_df()
+# # print(df.head())
+# df["From"] = 1.
+# df["To"] = 2.
+# df["trans"] = 1.
+# df["Tstart"] = 0.
+# # df["covar"] = df[["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8"]].values
+
+# df = df.rename({"duration": "Tstop", "event": "status"}, axis='columns')
+# df["Tstop"] = df["Tstop"]/df["Tstop"].max()
+# print(df["Tstop"])
+
+# survdata_test = df.sample(frac=0.2)
+# survdata_train = df.drop(survdata_test.index)
+# survdata_val = survdata_train.sample(frac=0.2)
+# survdata_train = survdata_train.drop(survdata_val.index)
+
+# def get_dataset(df,Tmax):
+#     # x = torch.from_numpy(np.array(df[["covar"]])).float().to(device)
+#     x = torch.from_numpy(np.array(df[["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8"]])).float().to(device)
+#     Tstart = torch.from_numpy(np.array(df[["Tstart"]])).flatten().float().to(device)
+#     Tstop = torch.from_numpy(np.array(df[["Tstop"]])).flatten().float().to(device)
+#     Tstart = Tstart/Tmax*multiplier
+#     Tstop = Tstop/Tmax*multiplier
+#     From = torch.from_numpy(np.array(df[["From"]])).flatten().int().to(device)
+#     To = torch.from_numpy(np.array(df[["To"]])).flatten().int().to(device)
+#     trans = torch.from_numpy(np.array(df[["trans"]])).flatten().int().to(device)
+#     status = torch.from_numpy(np.array(df[["status"]])).flatten().float().to(device)
+#     dataset = TensorDataset(x,Tstart,Tstop,From,To,trans,status)
+#     return dataset
+
+# multiplier = 1.
+# Tmax = max(torch.from_numpy(np.array(df["Tstop"])).flatten().float().to(device))
+# # print(Tmax)
+# train_loader = DataLoader(get_dataset(survdata_train,Tmax), batch_size=512, shuffle=True)
+# val_loader = DataLoader(get_dataset(survdata_val,Tmax), batch_size=512, shuffle=True)
+# print(survdata_test.shape[0])
+# test_loader = DataLoader(get_dataset(survdata_test,Tmax), batch_size=survdata_test.shape[0], shuffle=False)
+
+# num_in = 9
+# num_latent = 10
+# layers_encoder = [20]*2#[10]*2
+# dropout_encoder = [0.1]*2
+# layers_odefunc = [50]*5#[50]*3
+# # dropout_odefunc = []
+
+# trans_matrix = torch.tensor([[np.nan,1],[np.nan,np.nan]]).to(device)
+
+# encoder = Encoder(num_in,num_latent,layers_encoder, dropout_encoder).to(device)
+# odefunc = ODEFunc(trans_matrix,num_in,num_latent,layers_odefunc).to(device)
+# block = ODEBlock(odefunc).to(device)
+# odesurv = SurvNODE(block,encoder).to(device)
+
+# optimizer = torch.optim.Adam(odesurv.parameters(), weight_decay = 1e-6, lr=1e-3)
+# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 20, gamma=0.1)
+
+# early_stopping = EarlyStopping("Checkpoints/surv",patience=20, verbose=True)
+# for i in tqdm(range(500)):
+#     odesurv.train()
+#     for mini,ds in enumerate(train_loader):
+#         # print(ds)
+#         myloss,t2,_ = loss(odesurv,*ds)
+#         optimizer.zero_grad()
+#         myloss.backward()    
+#         optimizer.step()
+        
+#     odesurv.eval()
+#     with torch.no_grad():
+#         lossval = 0
+#         for _,ds in enumerate(val_loader):
+#             t1,t2,_ = loss(odesurv,*ds)
+#             lossval += t1.item()
+    
+# #     scheduler.step()
+#     early_stopping(lossval/len(val_loader), odesurv)
+#     if early_stopping.early_stop:
+#         print("Early stopping")
+#         break
+        
+# odesurv.load_state_dict(torch.load('Checkpoints/surv_checkpoint.pt'))
+
+# optimizer = torch.optim.Adam(odesurv.parameters(), weight_decay = 1e-7, lr=1e-4)
+# early_stopping = EarlyStopping("Checkpoints/surv",patience=20, verbose=True)
+# for i in tqdm(range(500)):
+#     odesurv.train()
+#     for mini,ds in enumerate(train_loader):
+#         myloss,t2,_ = loss(odesurv,*ds)
+#         optimizer.zero_grad()
+#         myloss.backward()    
+#         optimizer.step()
+        
+#     odesurv.eval()
+#     with torch.no_grad():
+#         lossval = 0
+#         for _,ds in enumerate(val_loader):
+#             t1,t2,_ = loss(odesurv,*ds)
+#             lossval += t1.item()
+    
+# #     scheduler.step()
+#     early_stopping(lossval/len(val_loader), odesurv)
+#     if early_stopping.early_stop:
+#         print("Early stopping")
+#         break
+        
+# odesurv.load_state_dict(torch.load('Checkpoints/surv_checkpoint.pt'))
+
+# for ds in test_loader:
+#     print(measures(odesurv, torch.tensor([1., 0.]).cuda(),*ds, multiplier=1.,points=500))
+
+
+
+##############################################################################
+
 from sklearn_pandas import DataFrameMapper
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
-def make_dataloader(df,Tmax,batchsize, shuffle=True):
-    cols_standardize = ['x0','x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13']
-    cols_leave = ['x1', 'x2', 'x3', 'x4', 'x5', 'x6']
+def make_dataloader(df,Tmax,batchsize):
+    cols_standardize = ['x0', 'x1', 'x2', 'x3', 'x8']
+    cols_leave = ['x4', 'x5', 'x6', 'x7']
 
     standardize = [([col], StandardScaler()) for col in cols_standardize]
     leave = [(col, None) for col in cols_leave]
@@ -72,7 +184,7 @@ def make_dataloader(df,Tmax,batchsize, shuffle=True):
     trans = torch.tensor([1],device=device).repeat((T.shape))
 
     dataset = TensorDataset(X,Tstart,T,From,To,trans,E)
-    loader = DataLoader(dataset, batch_size=batchsize, shuffle=shuffle)
+    loader = DataLoader(dataset, batch_size=batchsize, shuffle=True)
     return loader
 
 def odesurv_manual_benchmark(df_train, df_test,config):
@@ -84,9 +196,9 @@ def odesurv_manual_benchmark(df_train, df_test,config):
     
     train_loader = make_dataloader(df_train,Tmax/config["multiplier"],config["batch_size"])
     val_loader = make_dataloader(df_val,Tmax/config["multiplier"],len(df_val))
-    test_loader = make_dataloader(df_test,Tmax/config["multiplier"],len(df_test), shuffle=False)
+    test_loader = make_dataloader(df_test,Tmax/config["multiplier"],len(df_test))
     
-    num_in = 14
+    num_in = 9
     num_latent = config["num_latent"]
     layers_encoder =  [config["encoder_neurons"]]*config["num_encoder_layers"]
     dropout_encoder = [config["encoder_dropout"]]*config["num_encoder_layers"]
@@ -106,8 +218,7 @@ def odesurv_manual_benchmark(df_train, df_test,config):
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=config["scheduler_factor"], patience=config["scheduler_epochs"], verbose="True")
     
     early_stopping = EarlyStopping("test",patience=config["patience"], verbose=True)
-    t = trange(6, desc='Training', leave=True, ncols=120)
-    for i in t:
+    for i in tqdm(range(5)):
         odesurv.train()
         for mini,ds in enumerate(train_loader):
             myloss,_,_ = loss(odesurv,*ds,mu=config["mu"]) #
@@ -132,38 +243,8 @@ def odesurv_manual_benchmark(df_train, df_test,config):
             #     ibs_test += t2
             #     ibnll_test += t3
             early_stopping(lossval/len(val_loader), odesurv)
-            print("Scheduler")
             scheduler.step(lossval/len(val_loader))
-            # print("lossval: "+str(lossval/len(val_loader))+" c: "+str(conc/len(val_loader))+" ibs: "+str(ibs/len(val_loader))+" ibnll: "+str(ibnll/len(val_loader)))
-            t.refresh()
-            t.set_postfix({"lossval.:": lossval/len(val_loader),
-                           "c" : conc/len(val_loader),
-                           "ibs" : ibs/len(val_loader),
-                           "ibll": -ibnll/len(val_loader)})
-
-        temp_t = torch.from_numpy(np.linspace(0.,1,100))
-        prediction_hazard = []
-        durr = []
-        with torch.no_grad():
-            for df in test_loader:
-                # print(df)
-                # print(len(temp_t))
-                # print(df[0].shape)
-                out = odesurv.predict_cumhazard(df[0],temp_t).cpu()
-                prediction_hazard.append(out)
-                durr = df[2]
-                # print(df[0][:,2])
-        prediction_hazard = torch.cat(prediction_hazard,dim=1)
-
-        plt.figure()
-        plt.xlim(0, Tmax)
-        plt.ylim(0, 16)
-        colors = ["red", "cyan", "midnightblue", "magenta"]
-        for patient in range(4):
-            plt.plot((temp_t*Tmax).numpy(),prediction_hazard[:,patient,0,1].numpy(), color=colors[patient])
-            plt.vlines(x = (Tmax*durr[patient]).cpu().numpy(), ymin=0, ymax=0.4, linewidth=2, color=colors[patient])
-        # plt.text(2, 5, r'$\cos(2 \pi t) \exp(-t)$', fontdict=font)
-        plt.savefig("step_{}".format(i))
+            print("lossval: "+str(lossval/len(val_loader))+" c: "+str(conc/len(val_loader))+" ibs: "+str(ibs/len(val_loader))+" ibnll: "+str(ibnll/len(val_loader)))
 
         if early_stopping.early_stop:
             print("Early stopping")
@@ -202,16 +283,13 @@ def odesurv_manual_benchmark(df_train, df_test,config):
             conc += t1
             ibs += t2
             ibnll += t3
-
     return conc/len(test_loader), ibs/len(test_loader), ibnll/len(test_loader)
 
 from sklearn.model_selection import KFold
 from pycox import datasets
 
 kfold = KFold(5,shuffle=True)
-df_all = datasets.support.read_df()
-# print(df_all[0:13].head())
-
+df_all = datasets.metabric.read_df()
 gen = kfold.split(df_all)
 
 # config = {
@@ -233,45 +311,47 @@ gen = kfold.split(df_all)
 #     "traintest_fraction": 0.2
 # }
 
+# config = {
+#     "lr_stage1": 1e-3,
+#     "lr_stage2": 1e-4,
+#     "weight_decay1": 1e-4,
+#     "weight_decay2": 1e-7,
+#     "num_latent": 30,
+#     "encoder_neurons": 20,
+#     "num_encoder_layers": 2,
+#     "encoder_dropout": 0.2,
+#     "odefunc_neurons": 500,#100, 
+#     "num_odefunc_layers": 5,#3,
+#     "batch_size": 512,
+#     "multiplier": 1.,
+#     "mu": 1e-4,
+#     "patience": 20,
+#     "softplus_beta": 1.,
+#     "scheduler_epochs": 15,
+#     "scheduler_factor": 0.2,
+#     "traintest_fraction": 0.2
+# }
+
 config = {
-    "lr_stage1": 5e-4,
-    "lr_stage2": 5e-5,
-    "weight_decay1": 1e-5,
+    "lr_stage1": 1e-3,
+    "lr_stage2": 1e-4,
+    "weight_decay1": 1e-4,
     "weight_decay2": 1e-7,
-    "num_latent": 200,
-    "encoder_neurons": 80,
+    "num_latent": 70,#30,
+    "encoder_neurons": 20,
     "num_encoder_layers": 5,
-    "encoder_dropout": 0,
-    "odefunc_neurons": 1000, 
-    "num_odefunc_layers": 5,
+    "encoder_dropout": 0.,
+    "odefunc_neurons": 500,#100, 
+    "num_odefunc_layers": 5,#3,
     "batch_size": 512,
     "multiplier": 1.,
     "mu": 1e-4,
     "patience": 20,
-    "softplus_beta": 0.1,
-    "scheduler_epochs": 20,
+    "softplus_beta": 1.,
+    "scheduler_epochs": 15,
     "scheduler_factor": 0.2,
     "traintest_fraction": 0.2
 }
-
-# config = {
-#     "lr_stage1": tune.grid_search([1e-5,5e-5,1e-4]),
-#     "weight_decay1": tune.grid_search([1e-7,1e-5,1e-3]),
-#     "num_latent": 200,
-#     "encoder_neurons": 400,
-#     "num_encoder_layers": 2,
-#     "encoder_dropout": 0.,
-#     "odefunc_neurons": tune.grid_search([400,1000]),
-#     "num_odefunc_layers": tune.grid_search([2,4]),
-#     "batch_size": 512,
-#     "multiplier": 1.,
-#     "mu": 1e-4,
-#     "patience": 10,
-#     "softplus_beta": 1.,
-#     "scheduler_epoch": 20,
-#     "scheduler_gamma": 0.1,
-#      "traintest_fraction": 0.2    
-# }
 
 
 odesurv_bench_vals = []
@@ -289,3 +369,35 @@ print(scores)
 print(torch.mean(scores, dim=0))
 print(torch.std(scores, dim=0))
 
+# from hyperopt import hp
+# args = {
+#     "lr": hp.choice("lr", [1e-4, 3e-4]),
+#     "weight_decay": hp.choice("weight_decay", [1e-3, 1e-5]),
+#     "num_latent": hp.randint('num_latent', 20, 35),
+#     "encoder_neurons": hp.randint('encoder_neurons', 500, 1500),
+#     "num_encoder_layers": 2,
+#     "encoder_dropout": 0.1,
+#     "odefunc_neurons": 1000,
+#     "num_odefunc_layers": 3,
+#     "batch_size": 1/3,
+#     "multiplier": 3.,
+#     "mu": 1e-4,
+#     "softplus_beta": 1.,
+#     "scheduler_epoch": 50,
+#     "scheduler_gamma": 0.1,
+#     "patience": 20
+# }
+
+# # define an objective function
+# def objective(args):
+#     conc, ibs, ibnll = odesurv_manual_benchmark(df_train,df_test,args,"metabrick_test")
+#     return conc
+
+# # define a search space
+
+# # minimize the objective over the space
+# from hyperopt import fmin, tpe, space_eval
+# best = fmin(objective, args, algo=tpe.suggest, max_evals=100)
+
+# print(best)
+# print(space_eval(space, best))

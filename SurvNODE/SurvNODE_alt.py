@@ -59,7 +59,7 @@ class ODEFunc(nn.Module):
         self.number_of_hazards = int(np.nansum(transition_matrix.flatten().cpu()))
         self.num_probs = np.prod(transition_matrix.shape)
         # use this NN if covariates are to be included
-#         self.net = nn.Sequential(*((nn.Linear(2*self.num_probs+self.number_of_hazards+num_latent+num_in+1,layers[0]), nn.Tanh()) + tuple(tup for element in tuple(((nn.Linear(layers[i],layers[i+1]), nn.Tanh()) for i in range(len(layers)-1))) for tup in element) + (nn.Linear(layers[-1],self.number_of_hazards+num_latent),)))
+        # self.net = nn.Sequential(*((nn.Linear(2*self.num_probs+self.number_of_hazards+num_latent+num_in+1,layers[0]), nn.Tanh()) + tuple(tup for element in tuple(((nn.Linear(layers[i],layers[i+1]), nn.Tanh()) for i in range(len(layers)-1))) for tup in element) + (nn.Linear(layers[-1],self.number_of_hazards+num_latent),)))
         self.net = nn.Sequential(*((nn.Linear(2*self.num_probs+self.number_of_hazards+2*num_latent+1,layers[0]), nn.Tanh()) + tuple(tup for element in tuple(((nn.Linear(layers[i],layers[i+1]), nn.Tanh()) for i in range(len(layers)-1))) for tup in element) + (nn.Linear(layers[-1],self.number_of_hazards+num_latent),)))
 
         count = 0
@@ -85,8 +85,8 @@ class ODEFunc(nn.Module):
         out = self.net(torch.cat((y,self.y0,torch.tensor([t],device=y.device).repeat((y.shape[0],1))),1))
         
         # build Q matrix from output
-        # qvec = torch.nn.functional.softplus(out[:,:self.number_of_hazards],beta=self.softplus_beta)
-        qvec = torch.exp(out[:,:self.number_of_hazards])
+        qvec = torch.nn.functional.softplus(out[:,:self.number_of_hazards],beta=self.softplus_beta)
+        # qvec = torch.exp(out[:,:self.number_of_hazards])
         q = torch.zeros(self.trans_dim, self.trans_dim,device=y.device).repeat((y.shape[0],1,1))
         q[self.transition_matrix.repeat((y.shape[0],1,1))==1] = qvec.flatten()
         q[torch.eye(self.trans_dim, self.trans_dim,device=y.device).repeat((y.shape[0],1,1)) == 1] = -torch.sum(q,2).flatten()
@@ -117,7 +117,7 @@ class ODEBlock(nn.Module):
         p0 = torch.eye(self.trans_dim,device=y0.device).reshape(self.num_probs).repeat((y0.shape[0],1))
         Q0 = torch.zeros(self.number_of_hazards,device=x.device).repeat((y0.shape[0],1))
         yin = torch.cat((p0,p0,Q0,y0),1)
-        out = odeint(self.odefunc, yin, tinterval, method="bosh3", atol=1e-7, rtol=1e-7)#, adjoint_options=dict(norm=make_norm(y0)))
+        out = odeint(self.odefunc, yin, tinterval, method="dopri5", atol=1e-8, rtol=1e-8)#, adjoint_options=dict(norm=make_norm(y0)))
         return out       
         
 class SurvNODE(nn.Module):
@@ -159,16 +159,16 @@ class SurvNODE(nn.Module):
         
         # get lambda at tstop
         net_in = torch.cat((torch.cat([out[tstop_indices[i],i:i+1,:] for i in range(len(tstop))]),self.encoder(x),tstop.reshape(-1,1)),1)
-        # qvec = torch.nn.functional.softplus(self.odeblock.odefunc.net(net_in)[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta)
-        qvec = torch.exp(self.odeblock.odefunc.net(net_in)[:,:self.number_of_hazards])
+        qvec = torch.nn.functional.softplus(self.odeblock.odefunc.net(net_in)[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta)
+        # qvec = torch.exp(self.odeblock.odefunc.net(net_in)[:,:self.number_of_hazards])
         q = torch.zeros(self.trans_dim, self.trans_dim,device=x.device).repeat((x.shape[0],1,1))
         q[self.transition_matrix.repeat((x.shape[0],1,1))==1] = qvec.flatten()
         lam = torch.cat([q[t:t+1,from_state[t]-1,to_state[t]-1] for t in range(len(from_state))])
         # get all augmented hazards at the final time (t=multiplier) for loss term
         net_in = torch.cat((out[-1,:,:],self.encoder(x),torch.tensor([max(tstop)],device=x.device).repeat(tstop.reshape(-1,1).shape)),1)
         out = self.odeblock.odefunc.net(net_in)
-        # all_hazards_T = torch.cat((torch.nn.functional.softplus(out[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta),out[:,self.number_of_hazards:]),-1)
-        all_hazards_T = torch.cat((torch.exp(out[:,:self.number_of_hazards]),out[:,self.number_of_hazards:]),-1)
+        all_hazards_T = torch.cat((torch.nn.functional.softplus(out[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta),out[:,self.number_of_hazards:]),-1)
+        # all_hazards_T = torch.cat((torch.exp(out[:,:self.number_of_hazards]),out[:,self.number_of_hazards:]),-1)
         
         return (S,lam,all_hazards_T)
     
@@ -194,8 +194,8 @@ class SurvNODE(nn.Module):
             for i in range(tvec.shape[0]):
                 net_in = torch.cat((out[i,:,:], self.encoder(x),tvec[i].repeat(x.shape[0]).reshape(-1, 1)),1)
                 temp = self.odeblock.odefunc.net(net_in)
-                # qvec = torch.nn.functional.softplus(temp[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta)
-                qvec = torch.exp(temp[:,:self.number_of_hazards])
+                qvec = torch.nn.functional.softplus(temp[:,:self.number_of_hazards],beta=self.odeblock.odefunc.softplus_beta)
+                # qvec = torch.exp(temp[:,:self.number_of_hazards])
                 Q = torch.zeros(self.trans_dim, self.trans_dim,device=x.device).repeat((x.shape[0],1,1))
                 Q[self.transition_matrix.repeat((x.shape[0],1,1))==1] = qvec.flatten()
                 Q[torch.eye(self.trans_dim, self.trans_dim,device=x.device).repeat((x.shape[0],1,1)) == 1] = -torch.sum(Q,2).flatten()

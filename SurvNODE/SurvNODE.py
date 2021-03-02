@@ -55,9 +55,9 @@ class ODEFunc(nn.Module):
         for m in self.net.modules():
             if isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, mean=0, std=0.1)
-                nn.init.constant_(m.bias, val=0.)
+                nn.init.constant_(m.bias, val=0)
             if count==length-1:
-                nn.init.normal_(m.weight, mean=0, std=0)
+                nn.init.constant_(m.bias, val=0)
             count += 1
         self.num_in = num_in
     
@@ -125,9 +125,9 @@ class SurvNODE(nn.Module):
         out = self.odeblock(self.encoder(x),x,torch.unique(torch.cat([torch.tensor([0.],device=x.device),tstart,tstop])))
         
         # get P_ij(s,t) through Kolmogorov backward equation
-        tstart_indices = torch.flatten(torch.cat([(torch.unique(torch.cat([torch.tensor([0.],device=x.device),tstart,tstop])) == time).nonzero() for time in tstart]))
+        tstart_indices = torch.flatten(torch.cat([(torch.unique(torch.cat([torch.tensor([0.],device=x.device),tstart,tstop])) == time).nonzero(as_tuple=False) for time in tstart]))
         Ttstartinv = torch.cat([out[tstart_indices[i],i,self.num_probs:(self.num_probs*2)] for i in range(len(tstart))]).reshape((tstart.shape[0],self.trans_dim,self.trans_dim))
-        tstop_indices = torch.flatten(torch.cat([(torch.unique(torch.cat([torch.tensor([0.],device=x.device),tstart,tstop])) == time).nonzero() for time in tstop]))
+        tstop_indices = torch.flatten(torch.cat([(torch.unique(torch.cat([torch.tensor([0.],device=x.device),tstart,tstop])) == time).nonzero(as_tuple=False) for time in tstop]))
         Ttstop = torch.cat([out[tstop_indices[i],i,:self.num_probs] for i in range(len(tstop))]).reshape((tstop.shape[0],self.trans_dim,self.trans_dim))
         S = torch.bmm(Ttstartinv,Ttstop)
         S = torch.cat([S[i:i+1,from_state[i]-1,from_state[i]-1] for i in range(len(from_state))])
